@@ -1,7 +1,7 @@
 # Nexus 서비스 설계 스펙
 
 > 작성일: 2026-04-28  
-> 상태: 초안 (ENG-REVIEW 전)
+> 상태: ENG-REVIEW 완료 (2026-04-28)
 
 ---
 
@@ -39,7 +39,18 @@ AGE Viewer (Docker)        :8005  ← 사람이 직접 그래프 탐색
 
 ### 2-2. 공통 쿼리 레이어
 
-`core/age_queries.py` 하나가 모든 쿼리 로직을 담는다. REST API와 MCP 서버 모두 이 모듈을 import해서 사용. DB 연결 풀도 여기서 관리.
+`core/age_queries.py` 하나가 모든 쿼리 로직을 담는다. REST API와 MCP 서버 모두 이 모듈을 import해서 사용.
+
+**DB 연결 전략:** `psycopg2.pool.ThreadedConnectionPool`. FastAPI 핸들러는 `async def` 없이 작성 (FastAPI가 자동으로 스레드풀 실행). 연결 팩토리에서 AGE 세션 초기화:
+```python
+def _make_conn(dsn):
+    conn = psycopg2.connect(dsn)
+    cur = conn.cursor()
+    cur.execute("LOAD 'age';")
+    cur.execute("SET search_path = ag_catalog, '$user', public;")
+    conn.commit()
+    return conn
+```
 
 ```
 core/age_queries.py
@@ -89,6 +100,8 @@ Nexus/
 | POST | `/rebuild` | 리빌드 실행 | — |
 
 **`/query` 설계 결정:** 키워드 추출은 호출자(Router/오케스트레이터) 책임. Nexus는 `keywords` 배열을 받아 AGE에서 `norm_label` CONTAINS 검색 후 N-hop BFS 확장만 수행. LLM 의존성 없음.
+
+**결과 정렬 및 제한:** LIMIT 없이 전체 반환. `confidence_score DESC, degree DESC` 정렬. 토큰 예산 제어는 Router 책임.
 
 ---
 
@@ -146,6 +159,10 @@ docker run -d --name age-viewer \
 | `AGE_GRAPH` | `codebase` | AGE 그래프 이름 |
 | `API_PORT` | `8004` | REST API 포트 |
 | `MCP_PORT` | `8006` | MCP SSE 포트 |
+| `API_KEY` | — | REST API 인증 키 (`X-API-Key` 헤더) |
+| `GRAPHIFY_PATH` | — | graphify 실행 경로 (e.g. `/usr/local/bin/graphify`) |
+| `SOURCE_DIR` | — | 분석 대상 소스 코드 디렉토리 |
+| `GRAPH_OUTPUT_PATH` | `graphify-out/graph.json` | graphify 출력 graph.json 경로 |
 
 환경변수 또는 `.env` 파일로 주입.
 
@@ -175,13 +192,41 @@ python mcp/server.py    # 포트 8006
 - `psycopg2-binary`
 - `mcp` (Anthropic MCP Python SDK)
 - `python-dotenv`
+- `pytest`, `httpx` (테스트용 — FastAPI TestClient 의존성)
 
 ---
 
-## 10. 알려진 한계 (이번 구현)
+## 10. 테스트 전략
+
+**프레임워크:** pytest + FastAPI TestClient + 실제 AGE DB 연결 (모킹 없음)
+
+**테스트 범위:**
+- `tests/test_age_queries.py` — `core/age_queries.py` 함수별 단위 테스트 (실제 AGE DB)
+- `tests/test_api.py` — REST API 엔드포인트 통합 테스트 (TestClient)
+- `tests/test_rebuild.py` — rebuild 플래그 동작, 503 응답 테스트
+
+**테스트 DB:** 별도 `codebase_test` AGE 그래프 사용. 테스트 실행 전 픽스처로 소규모 노드/엣지 적재.
+
+---
+
+## 11. 알려진 한계 (이번 구현)
 
 | 항목 | 현황 | 개선 시점 |
 |------|------|---------|
 | Loader MERGE | full wipe + CREATE | 고빈도 rebuild 필요 시 |
 | rebuild_flag | 메모리, 재시작 시 초기화 | 안정성 필요 시 DB 플래그로 |
 | 코드 노드 임베딩 | 없음 | 코드 유사도 검색 필요 시 |
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | 범위 & 전략 | 0 | — | — |
+| Codex Review | `/codex review` | 독립 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | 아키텍처 & 테스트 (필수) | 1 | CLEAR | 6 issues, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX (해당 없음) | 0 | — | — |
+| DX Review | `/plan-devex-review` | DX 검토 | 0 | — | — |
+
+**VERDICT: ENG CLEARED — 구현 시작 가능**
