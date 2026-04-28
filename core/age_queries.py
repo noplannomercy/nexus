@@ -42,30 +42,42 @@ def _parse(row) -> dict | None:
     return dict(raw)
 
 
+def _resolve_id(cur, node_id: str) -> str:
+    """Return actual graph ID for node_id, falling back to fuzzy norm_label match."""
+    cur.execute(f"""
+        SELECT * FROM cypher('{_graph}', $$
+            MATCH (n {{id: '{_cs(node_id)}'}}) RETURN n.id LIMIT 1
+        $$) AS (result agtype)
+    """)
+    row = cur.fetchone()
+    if row:
+        raw = row[0]
+        return json.loads(raw) if isinstance(raw, str) else str(raw)
+    normalized = _cs(node_id.lower().replace("_", "").replace(" ", ""))
+    cur.execute(f"""
+        SELECT * FROM cypher('{_graph}', $$
+            MATCH (n)
+            WHERE toLower(n.norm_label) CONTAINS '{normalized}'
+               OR toLower(n.id) CONTAINS '{normalized}'
+            RETURN n.id LIMIT 1
+        $$) AS (result agtype)
+    """)
+    row = cur.fetchone()
+    if row:
+        raw = row[0]
+        return json.loads(raw) if isinstance(raw, str) else str(raw)
+    return node_id
+
+
 def get_node(node_id: str) -> dict | None:
     conn = _get_conn()
     try:
         cur = conn.cursor()
-        # exact match first
+        resolved = _resolve_id(cur, node_id)
         cur.execute(f"""
             SELECT * FROM cypher('{_graph}', $$
-                MATCH (n {{id: '{_cs(node_id)}'}})
+                MATCH (n {{id: '{_cs(resolved)}'}})
                 RETURN properties(n)
-            $$) AS (result agtype)
-        """)
-        row = cur.fetchone()
-        if row:
-            cur.close()
-            return _parse(row)
-        # fuzzy: norm_label contains lowercased input (no spaces/underscores)
-        normalized = _cs(node_id.lower().replace("_", "").replace(" ", ""))
-        cur.execute(f"""
-            SELECT * FROM cypher('{_graph}', $$
-                MATCH (n)
-                WHERE toLower(n.norm_label) CONTAINS '{normalized}'
-                   OR toLower(n.id) CONTAINS '{normalized}'
-                RETURN properties(n)
-                LIMIT 1
             $$) AS (result agtype)
         """)
         row = cur.fetchone()
@@ -79,10 +91,11 @@ def get_neighbors(node_id: str, depth: int = 1) -> list[dict]:
     conn = _get_conn()
     try:
         cur = conn.cursor()
+        resolved = _resolve_id(cur, node_id)
         cur.execute(f"""
             SELECT * FROM cypher('{_graph}', $$
-                MATCH (src {{id: '{_cs(node_id)}'}})-[r*1..{int(depth)}]-(n)
-                WHERE n.id <> '{_cs(node_id)}'
+                MATCH (src {{id: '{_cs(resolved)}'}})-[r*1..{int(depth)}]-(n)
+                WHERE n.id <> '{_cs(resolved)}'
                 RETURN properties(n), properties(r[0])
             $$) AS (node agtype, edge agtype)
         """)
@@ -165,9 +178,11 @@ def shortest_path(src_id: str, dst_id: str) -> list[dict] | None:
     conn = _get_conn()
     try:
         cur = conn.cursor()
+        src_resolved = _resolve_id(cur, src_id)
+        dst_resolved = _resolve_id(cur, dst_id)
         cur.execute(f"""
             SELECT * FROM cypher('{_graph}', $$
-                MATCH path = (a {{id: '{_cs(src_id)}' }})-[*1..15]->(b {{id: '{_cs(dst_id)}'}})
+                MATCH path = (a {{id: '{_cs(src_resolved)}' }})-[*1..15]->(b {{id: '{_cs(dst_resolved)}'}})
                 RETURN [n IN nodes(path) | properties(n)]
                 LIMIT 1
             $$) AS (result agtype)
