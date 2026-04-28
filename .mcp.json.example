@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "nexus": {
+      "url": "http://localhost:8006/sse"
+    }
+  }
+}
