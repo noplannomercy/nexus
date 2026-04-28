@@ -207,14 +207,16 @@ def keyword_search(keywords: list[str], hops: int = 1) -> list[dict]:
 
         for kw in keywords:
             kw_escaped = _cs(kw.lower())
+
+            # single query: seeds + neighbors in one shot
             cur.execute(f"""
                 SELECT * FROM cypher('{_graph}', $$
-                    MATCH (n)
-                    WHERE toLower(n.id) CONTAINS '{kw_escaped}'
-                       OR toLower(n.label) CONTAINS '{kw_escaped}'
-                       OR toLower(n.norm_label) CONTAINS '{kw_escaped}'
-                    RETURN properties(n)
-                $$) AS (result agtype)
+                    MATCH (seed)
+                    WHERE toLower(seed.id) CONTAINS '{kw_escaped}'
+                       OR toLower(seed.label) CONTAINS '{kw_escaped}'
+                       OR toLower(seed.norm_label) CONTAINS '{kw_escaped}'
+                    RETURN properties(seed), true
+                $$) AS (node agtype, is_seed agtype)
             """)
             seed_rows = cur.fetchall()
             seed_ids = []
@@ -224,15 +226,18 @@ def keyword_search(keywords: list[str], hops: int = 1) -> list[dict]:
                 if nid not in seen:
                     seen.add(nid)
                     results.append(node)
-                    seed_ids.append(nid)
+                    seed_ids.append(_cs(nid))
 
-            for sid in seed_ids:
+            if seed_ids and hops > 0:
+                # build IN list for single neighbor expansion query
+                id_list = ", ".join(f"'{sid}'" for sid in seed_ids)
                 cur.execute(f"""
                     SELECT * FROM cypher('{_graph}', $$
-                        MATCH (seed {{id: '{_cs(sid)}' }})-[*1..{int(hops)}]-(n)
-                        WHERE n.id <> '{_cs(sid)}'
+                        MATCH (seed)-[*1..{int(hops)}]-(n)
+                        WHERE seed.id IN [{id_list}]
+                          AND NOT n.id IN [{id_list}]
                         RETURN properties(n)
-                    $$) AS (result agtype)
+                    $$) AS (node agtype)
                 """)
                 for row in cur.fetchall():
                     node = json.loads(row[0]) if isinstance(row[0], str) else dict(row[0])
