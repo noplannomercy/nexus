@@ -46,10 +46,26 @@ def get_node(node_id: str) -> dict | None:
     conn = _get_conn()
     try:
         cur = conn.cursor()
+        # exact match first
         cur.execute(f"""
             SELECT * FROM cypher('{_graph}', $$
                 MATCH (n {{id: '{_cs(node_id)}'}})
                 RETURN properties(n)
+            $$) AS (result agtype)
+        """)
+        row = cur.fetchone()
+        if row:
+            cur.close()
+            return _parse(row)
+        # fuzzy: norm_label contains lowercased input (no spaces/underscores)
+        normalized = _cs(node_id.lower().replace("_", "").replace(" ", ""))
+        cur.execute(f"""
+            SELECT * FROM cypher('{_graph}', $$
+                MATCH (n)
+                WHERE toLower(n.norm_label) CONTAINS '{normalized}'
+                   OR toLower(n.id) CONTAINS '{normalized}'
+                RETURN properties(n)
+                LIMIT 1
             $$) AS (result agtype)
         """)
         row = cur.fetchone()
