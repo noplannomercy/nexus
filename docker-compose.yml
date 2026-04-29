@@ -1,0 +1,28 @@
+services:
+  nexus-api:
+    build: .
+    image: nexus:latest
+    container_name: nexus-api
+    ports:
+      - "8005:8005"
+    env_file:
+      - .env
+    command: python run_api.py
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  nexus-mcp:
+    build: .
+    image: nexus:latest
+    container_name: nexus-mcp
+    ports:
+      - "8006:8006"
+    env_file:
+      - .env
+    command: python run_mcp.py
+    restart: unless-stopped
